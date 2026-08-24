@@ -5,10 +5,18 @@ plan, exposes a Billing Portal link so subscribers can manage/cancel, and
 keeps a local record of each Clerk user's subscription state in sync via
 Stripe webhooks.
 
+Rewritten from Java/Spring Boot to Go, endpoint-for-endpoint and
+behavior-for-behavior compatible, to compare real-world RAM usage on
+Render's free tier — same motivation and conventions as
+[lumo-movies-svc](../lumo-movies-svc). Uses the official
+[stripe-go](https://github.com/stripe/stripe-go) SDK (`stripe.Client`, the
+current recommended API style as of v82.1+) rather than hand-rolling Stripe
+API calls.
+
 **This service never talks to Clerk directly.** `lumo-api-gateway` is the
 only place that verifies a Clerk session JWT; it forwards the already-verified
 Clerk user id (`X-Clerk-User-Id`) plus a shared secret proving the call really
-came from the gateway (`X-Internal-Api-Key`) — see `GatewayAuthenticationFilter`.
+came from the gateway (`X-Internal-Api-Key`) — see `internal/gatewayauth`.
 If you're calling this service directly (e.g. local testing without the
 gateway in front of it), you need to send both headers yourself.
 
@@ -64,28 +72,30 @@ Stripe CLI does both jobs at once:
 
 ## Activation failures (refund + email)
 
-Every time a webhook changes which plan a user should be on, `SubscriptionService`
-tells `lumo-user-svc` (via the gateway's `/internal` path) to flip their
-`subscription_type` — see `SubscriptionActivationService`. That call is
-retried a few times over a few seconds (`UserSyncService`); a user watching
-their account page right after paying will assume they got scammed long
-before a 30-minute or hour-long background retry would ever fire, so the
-window is deliberately short.
+Every time a webhook changes which plan a user should be on,
+`internal/subscriptions.Service` tells `lumo-user-svc` (via the gateway's
+`/internal` path) to flip their `subscription_type` — see
+`internal/subscriptions.ActivationService`. That call is retried a few times
+over a few seconds (`internal/usersync`); a user watching their account page
+right after paying will assume they got scammed long before a 30-minute or
+hour-long background retry would ever fire, so the window is deliberately
+short.
 
 If it still hasn't landed after those retries **and the user was supposed to
 be upgraded to Pro**, this is treated as a hard failure, not something to
 keep retrying quietly in the background:
 
-1. `RefundService` refunds the subscription's latest payment in full and
+1. `internal/refund` refunds the subscription's latest payment in full and
    cancels the Stripe subscription, so the customer isn't charged again for
    something they can't use. This itself retries a few times too (same short
    backoff) before giving up.
 2. The local `subscriptions` row is deleted, not marked as some kind of
    "failed" status — a `subscriptions` row only ever exists for a Clerk user
-   this system actually confirmed is on a real plan (see `SubscriptionService`'s
-   doc comment). A refunded customer has no real subscription relationship
-   left, and may never come back, so there's nothing to keep a record of.
-3. `EmailService` (Resend) emails the customer confirming the refund.
+   this system actually confirmed is on a real plan (see
+   `internal/subscriptions.Service`'s doc comment). A refunded customer has
+   no real subscription relationship left, and may never come back, so
+   there's nothing to keep a record of.
+3. `internal/email` (Resend) emails the customer confirming the refund.
 
 Since nothing is persisted for a failed activation, the frontend can't learn
 about it by polling `GET /payments/subscription` later — see `my-app`'s
@@ -95,9 +105,39 @@ of one specific checkout attempt instead.
 
 If the refund itself fails even after retries, or if a *revoke* (cancellation)
 sync fails after retries — no money involved there, so no refund — there's no
-ops-alert email for either case; it's a loud `log.error` only. Both need a
+ops-alert email for either case; it's a loud log line only. Both need a
 human to reconcile Stripe/the DB by hand, found by watching the logs.
 
-This whole flow runs off the Stripe webhook's request thread (`@Async`, see
-`LumoPaymentsSvcApplication`) so a slow refund/email round-trip can't make
-Stripe think webhook delivery itself failed and retry the whole event.
+This whole flow runs off the Stripe webhook's request goroutine
+(`ActivationService.SyncOrEscalate` dispatches its own detached goroutine —
+the Go equivalent of the Java version's `@Async`) so a slow refund/email
+round-trip can't make Stripe think webhook delivery itself failed and retry
+the whole event.
+
+## Structure
+
+- `cmd/server` — entrypoint, wiring
+- `internal/models` — wire/DB types (mirrors `feather.models.PaymentSubscription`
+  and its enums)
+- `internal/subscriptions` — the local `subscriptions` table repository, the
+  webhook-driven sync/read service, and the activation-failure escalation
+  logic (mirrors `PaymentSubscriptionRepository` +
+  `SubscriptionService`/`SubscriptionActivationService` +
+  `SubscriptionController`/`InternalSubscriptionController`)
+- `internal/checkout` — Checkout Session creation + the post-checkout result
+  poll (mirrors `CheckoutService`/`CheckoutController`)
+- `internal/billingportal` — Billing Portal session creation (mirrors
+  `BillingPortalService`/`BillingPortalController`)
+- `internal/webhook` — Stripe webhook signature verification + event
+  dispatch (mirrors `StripeWebhookService`/`StripeWebhookController`)
+- `internal/refund`, `internal/email`, `internal/usersync` — supporting
+  Stripe/Resend/gateway calls (mirror `RefundService`/`EmailService`/`UserSyncService`)
+- `internal/gatewayauth`, `internal/gatewayclient`, `internal/dbx`,
+  `internal/metrics`, `internal/reqlog`, `internal/config` — supporting
+  pieces, each with a package doc comment pointing at the Java class(es) it
+  replaces
+
+## Scope note
+
+The Java source's `PaymentSubscriptionRepository.findByStripeCustomerId`
+method was declared but never called from any live endpoint — not ported.
