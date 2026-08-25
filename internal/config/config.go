@@ -52,8 +52,8 @@ func Load() Config {
 		// the real one whenever unset (i.e. always, in production).
 		StripeWebhookSecret: firstNonEmpty(os.Getenv("STRIPE_WEBHOOK_SECRET_LOCAL"), os.Getenv("STRIPE_WEBHOOK_SECRET")),
 		StripeProPriceID:    os.Getenv("STRIPE_PRO_PRICE_ID"),
-		StripeSuccessURL:    envOr("STRIPE_SUCCESS_URL", "http://localhost:3000/"),
-		StripeCancelURL:     envOr("STRIPE_CANCEL_URL", "http://localhost:3000/"),
+		StripeSuccessURL:    envOr("STRIPE_SUCCESS_URL", "https://auroraflix.cloud/"),
+		StripeCancelURL:     envOr("STRIPE_CANCEL_URL", "https://auroraflix.cloud/"),
 
 		ResendAPIKey:      os.Getenv("RESEND_API_KEY"),
 		ResendFromAddress: os.Getenv("RESEND_FROM_EMAIL"),
