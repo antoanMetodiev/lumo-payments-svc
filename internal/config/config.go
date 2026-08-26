@@ -1,6 +1,6 @@
 // Package config reads the exact same environment variables the Java service
 // used (application.properties), so this drop-in replacement needs zero
-// changes to whatever's already set on Render.
+// changes to whatever's already set on Render
 package config
 
 import "os"
