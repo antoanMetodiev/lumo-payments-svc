@@ -60,6 +60,26 @@ func main() {
 	}
 	defer shutdownMetrics(context.Background())
 
+	// Fail fast on missing Stripe config instead of starting into a state
+	// where /health reports UP, every read endpoint works, and only an
+	// actual purchase attempt fails — with a 502 whose cause is visible
+	// nowhere but this service's own logs. stripe.NewClient("") is perfectly
+	// happy to be constructed, so nothing catches this otherwise. A crash
+	// loop here is noisy on purpose: it surfaces in the Render dashboard
+	// immediately, rather than being discovered by a customer trying to pay.
+	if cfg.StripeSecretKey == "" {
+		log.Fatal("STRIPE_SECRET_KEY is not set — checkout, the billing portal, refunds and webhook verification would all fail at runtime")
+	}
+	if cfg.StripeProPriceID == "" {
+		log.Fatal("STRIPE_PRO_PRICE_ID is not set — POST /payments/checkout-session cannot build a line item without it")
+	}
+	// Not fatal: webhooks break without it, but everything a signed-in user
+	// touches directly still works, so taking the whole service down would
+	// cost more than it saves.
+	if cfg.StripeWebhookSecret == "" {
+		log.Print("WARNING: STRIPE_WEBHOOK_SECRET is not set — POST /webhooks/stripe will reject every event, so no subscription will ever activate")
+	}
+
 	sc := stripe.NewClient(cfg.StripeSecretKey)
 	gatewayClient := gatewayclient.New(cfg.GatewayURL, cfg.InternalSecret)
 

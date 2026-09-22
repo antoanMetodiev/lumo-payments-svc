@@ -78,8 +78,15 @@ func (h *Handlers) createCheckoutSession(w http.ResponseWriter, r *http.Request)
 
 	url, err := h.svc.CreateCheckoutSessionURL(r.Context(), clerkID, req.Email)
 	if err != nil {
+		// Stripe's own error text (bad API key, unknown price id, ...) is
+		// the whole diagnosis here, so it goes in the log verbatim rather
+		// than being flattened into "checkout failed".
 		log.Printf("checkout: failed to create Stripe checkout session for clerkId=%s: %v", clerkID, err)
 		w.WriteHeader(http.StatusBadGateway)
+		// An empty 502 body told the frontend (and anyone reading a browser
+		// network tab) nothing at all — this at least names the failing
+		// dependency without leaking the Stripe error itself to the client.
+		writeJSON(w, map[string]string{"error": "stripe_checkout_unavailable"})
 		return
 	}
 	writeJSON(w, SessionResponse{URL: url})
